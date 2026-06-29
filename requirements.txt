@@ -1,0 +1,18 @@
+# 앱 실행 필수
+streamlit==1.58.0
+pandas==3.0.3
+altair==6.2.2
+requests==2.34.2
+python-dotenv==1.2.2
+
+# bmi_model.py (GMM 피팅)
+numpy==2.4.6
+scikit-learn==1.9.0
+scipy==1.17.1
+
+# 선택: 메뉴명 퍼지 매칭 정확도 향상 (없으면 difflib 폴백)
+# rapidfuzz
+
+# 선택: colab_bmi_gmm.py 시각화 (Colab 전용, 앱 실행엔 불필요)
+# matplotlib
+# seaborn
