@@ -1,5 +1,6 @@
 # 앱 실행 필수
 streamlit==1.58.0
+mistralai>=1.0.0
 pandas==3.0.3
 altair==6.2.2
 requests==2.34.2

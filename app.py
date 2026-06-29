@@ -28,6 +28,7 @@ from nutrition_engine import (
     rank_menus_by_efficiency,
     suggest_alternatives,
 )
+from mistral_client import get_alternative_recommendation, is_mistral_available
 from risk_engine import (
     ACTIVITY_LEVELS,
     BMI_GROUP_ORDER,
@@ -236,12 +237,33 @@ with tab_a:
         target = caution_menus[0]
         pool   = [m for m in menus if m["name"] != target["name"]]
         alts   = suggest_alternatives(target, pool, _nutrition)
+
         if alts:
             st.write(f"**'{target['name']}'** 대신 영양밀도가 높은 메뉴:")
             for a in alts:
                 st.write(f"- {a['name']}  (점수 {a['efficiency_score']:.3f})")
         else:
             st.info("같은 열량대 대체 메뉴가 없습니다.")
+
+        st.divider()
+
+        if is_mistral_available():
+            with st.spinner("Mistral AI 영양 분석 중..."):
+                ai_comment = get_alternative_recommendation(
+                    target_name=target["name"],
+                    cautions=target.get("cautions", []),
+                    alternatives=alts,
+                    deficient=deficient,
+                    excess=excess,
+                    daily_nutrition=daily,
+                )
+            if ai_comment:
+                st.markdown("**Mistral AI 영양 분석**")
+                st.info(ai_comment)
+        else:
+            st.caption(
+                "💡 `.env`에 `MISTRAL_KEY`를 설정하면 Mistral AI 기반 상세 추천 설명을 받을 수 있습니다."
+            )
 
 
 # ════════════════════════════════════════════════════════════════════════════
