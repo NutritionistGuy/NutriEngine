@@ -19,6 +19,7 @@ env/
 
 # 임시 디버그 스크립트
 debug_*.py
+debug/
 
 # IDE
 .vscode/
@@ -32,4 +33,5 @@ Thumbs.db
 #기타
 HANDOFF.md
 analyze_mma.py
+analyze
 

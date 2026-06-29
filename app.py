@@ -15,6 +15,7 @@ Streamlit 통합 데모 — api_client × nutrition_engine × risk_engine.
 
 import datetime as dt
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -33,6 +34,12 @@ from risk_engine import (
     get_bmi_ratio_from_dist,
     run_simulation,
     sum_diet_nutrition,
+)
+from bmi_model import (
+    cluster_summary,
+    enrich_dist_with_gmm,
+    gmm_group_ratios,
+    load_params,
 )
 
 st.set_page_config(
@@ -57,6 +64,10 @@ def _dist(year: int):
 def _nutrition(name: str):
     return get_nutrition(name)
 
+@st.cache_data(ttl=0, show_spinner=False)   # 파일 변경 즉시 반영
+def _gmm_params():
+    return load_params()
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # 사이드바
@@ -74,7 +85,7 @@ with st.sidebar:
     st.divider()
 
     sel_date = st.date_input("식단 날짜", value=dt.date.today())
-    sel_year = st.selectbox("병무청 기준 연도", list(range(2024, 2019, -1)), index=0)
+    sel_year = st.selectbox("병무청 기준 연도", list(range(2026, 2019, -1)), index=0)
 
     st.divider()
 
@@ -244,7 +255,22 @@ with tab_b:
         "신검은 입대 전 건강 상태(수요)이며 식단→신검 인과관계 아님."
     )
 
-    # 1. 병무청 BMI 분포 현황
+    # 1. GMM 파라미터 로드 및 dist 주입
+    gmm_params = _gmm_params()
+    gmm_active = gmm_params is not None
+
+    if gmm_active:
+        dist_for_sim = enrich_dist_with_gmm(dist, gmm_params)
+        st.success(
+            f"GMM 모델 적용 중 — 컴포넌트 {gmm_params['n_components']}개 "
+            f"(학습 샘플 {gmm_params['n_samples']}명, BIC 최적화)"
+        )
+    else:
+        dist_for_sim = dist
+        st.info("GMM 파라미터 없음 — 단순 빈도 집계 사용.  "
+                "Colab에서 `colab_bmi_gmm.py` 실행 후 `data/gmm_params.json`을 저장하면 GMM이 활성화됩니다.")
+
+    # 2. 병무청 BMI 분포 현황
     st.subheader(f"병무청 {sel_year}년 신검 BMI 분포")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("샘플 수",    f"{dist.get('count', 0):,}명")
@@ -252,21 +278,34 @@ with tab_b:
     c3.metric("중앙값 BMI", f"{dist.get('p50', 0):.2f}")
     c4.metric("비만 비율",  f"{dist.get('obese_ratio', 0):.1%}")
 
-    ratio_by_group = get_bmi_ratio_from_dist(dist)
-    df_ratio = pd.DataFrame({
-        "비율 (%)": {g: round(ratio_by_group.get(g, 0) * 100, 2) for g in BMI_GROUP_ORDER}
-    })
-    st.bar_chart(df_ratio, use_container_width=True, height=240)
+    # 단순 빈도 vs GMM 비율 비교 차트
+    freq_ratios = get_bmi_ratio_from_dist(dist)   # GMM 없는 원래 근사값
+    if gmm_active:
+        gmm_ratios = gmm_group_ratios(gmm_params)
+        df_ratio = pd.DataFrame({
+            "단순 집계 (%)": {g: round(freq_ratios.get(g, 0) * 100, 2) for g in BMI_GROUP_ORDER},
+            "GMM 추정 (%)":  {g: round(gmm_ratios.get(g, 0) * 100, 2) for g in BMI_GROUP_ORDER},
+        })
+        st.bar_chart(df_ratio, use_container_width=True, height=260)
+        st.caption("GMM(AI)이 확률밀도 적분으로 추정한 군별 비율 vs 단순 빈도 집계")
+
+        with st.expander("GMM 모델 상세"):
+            st.code(cluster_summary(gmm_params), language=None)
+    else:
+        df_ratio = pd.DataFrame({
+            "비율 (%)": {g: round(freq_ratios.get(g, 0) * 100, 2) for g in BMI_GROUP_ORDER}
+        })
+        st.bar_chart(df_ratio, use_container_width=True, height=240)
 
     st.divider()
 
-    # 2. 시뮬레이션 실행
+    # 3. 시뮬레이션 실행 (GMM 반영된 dist_for_sim 사용)
     if not daily or daily.get("kcal", 0) == 0:
         st.warning("식단 영양정보가 없어 시뮬레이션을 실행할 수 없습니다.")
         st.stop()
 
-    sim_base = run_simulation(dist, daily, days=sel_days, activity=sel_activity)
-    sim_wi   = (run_simulation(dist, daily, days=sel_days,
+    sim_base = run_simulation(dist_for_sim, daily, days=sel_days, activity=sel_activity)
+    sim_wi   = (run_simulation(dist_for_sim, daily, days=sel_days,
                                what_if=what_if, activity=sel_activity)
                 if what_if else None)
 
@@ -306,7 +345,18 @@ with tab_b:
         "현재 분포 (%)":       {g: round(shift["original"].get(g, 0) * 100, 1)  for g in BMI_GROUP_ORDER},
         f"{sel_days}일 후 (%)": {g: round(shift["after_days"].get(g, 0) * 100, 1) for g in BMI_GROUP_ORDER},
     })
-    st.bar_chart(df_shift, use_container_width=True, height=260)
+    _shift_long = (df_shift.reset_index()
+                   .rename(columns={"index": "BMI군"})
+                   .melt(id_vars="BMI군", var_name="구분", value_name="비율(%)"))
+    st.altair_chart(
+        alt.Chart(_shift_long).mark_bar().encode(
+            x=alt.X("BMI군:N", sort=BMI_GROUP_ORDER, axis=alt.Axis(labelAngle=0), title=None),
+            y=alt.Y("비율(%):Q"),
+            color=alt.Color("구분:N", legend=alt.Legend(orient="bottom")),
+            xOffset="구분:N",
+        ).properties(height=260),
+        use_container_width=True,
+    )
 
     obese_chg = sim_base["summary"]["obese_ratio_change_ppt"]
     if obese_chg > 0:
@@ -326,7 +376,18 @@ with tab_b:
             "현재 식단 후 (%)": {g: round(shift["after_days"].get(g, 0) * 100, 1)    for g in BMI_GROUP_ORDER},
             "조정 식단 후 (%)": {g: round(shift_wi["after_days"].get(g, 0) * 100, 1) for g in BMI_GROUP_ORDER},
         })
-        st.bar_chart(df_wi, use_container_width=True, height=260)
+        _wi_long = (df_wi.reset_index()
+                    .rename(columns={"index": "BMI군"})
+                    .melt(id_vars="BMI군", var_name="식단 구분", value_name="비율(%)"))
+        st.altair_chart(
+            alt.Chart(_wi_long).mark_bar().encode(
+                x=alt.X("BMI군:N", sort=BMI_GROUP_ORDER, axis=alt.Axis(labelAngle=0), title=None),
+                y=alt.Y("비율(%):Q"),
+                color=alt.Color("식단 구분:N", legend=alt.Legend(orient="bottom")),
+                xOffset="식단 구분:N",
+            ).properties(height=260),
+            use_container_width=True,
+        )
 
         obese_wi = sim_wi["summary"]["obese_ratio_change_ppt"]
         ca, cb, cc = st.columns(3)
@@ -345,7 +406,18 @@ with tab_b:
             "현재 식단": {g: sim_base["group_results"][g]["risk"]["overall"] for g in BMI_GROUP_ORDER},
             "조정 식단": {g: sim_wi["group_results"][g]["risk"]["overall"]   for g in BMI_GROUP_ORDER},
         })
-        st.bar_chart(df_risk_cmp, use_container_width=True, height=240)
+        _risk_long = (df_risk_cmp.reset_index()
+                      .rename(columns={"index": "BMI군"})
+                      .melt(id_vars="BMI군", var_name="식단 구분", value_name="위험 점수"))
+        st.altair_chart(
+            alt.Chart(_risk_long).mark_bar().encode(
+                x=alt.X("BMI군:N", sort=BMI_GROUP_ORDER, axis=alt.Axis(labelAngle=0), title=None),
+                y=alt.Y("위험 점수:Q", scale=alt.Scale(domain=[0, 1])),
+                color=alt.Color("식단 구분:N", legend=alt.Legend(orient="bottom")),
+                xOffset="식단 구분:N",
+            ).properties(height=240),
+            use_container_width=True,
+        )
 
     st.divider()
 

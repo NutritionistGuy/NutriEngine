@@ -240,9 +240,16 @@ def sum_diet_nutrition(
     for m in menus:
         n = get_nutrition_fn(m["name"])
         if not n:
+            # API 매칭 실패 시 JSON cal만 kcal에 반영
+            if m.get("cal"):
+                totals["kcal"] = round(totals.get("kcal", 0.0) + m["cal"], 2)
             continue
         found += 1
-        for k, v in n.items():
+        merged = dict(n)
+        # API kcal이 0이면 army_diet.json의 cal 필드로 폴백
+        if not merged.get("kcal") and m.get("cal"):
+            merged["kcal"] = m["cal"]
+        for k, v in merged.items():
             if k.startswith("_"):
                 continue
             totals[k] = round(totals.get(k, 0.0) + (v or 0.0), 2)
